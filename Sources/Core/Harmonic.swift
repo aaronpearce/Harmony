@@ -36,8 +36,7 @@ import Combine
 /// without inherently misusing the library.
 ///
 ///
-
-public final class Harmonic: ObservableObject {
+public final class Harmonic {
 
     // Containers
     // Shared or private?
@@ -105,7 +104,7 @@ public final class Harmonic: ObservableObject {
         } else {
             self.userDefaults = .standard
         }
-        
+
         if configuration.isDummy {
             self.database = try! DatabaseQueue()
         } else {
@@ -120,8 +119,6 @@ public final class Harmonic: ObservableObject {
                     path: databasePath,
                     configuration: databaseConfiguration
                 )
-
-                print(databasePath)
 
                 try migrator.migrate(self.database)
             } catch {
@@ -160,51 +157,50 @@ private extension Harmonic {
     }
 }
 
+// MARK: CKSyncEngineDelegate
+
 extension Harmonic: CKSyncEngineDelegate {
-
+    
     public func handleEvent(_ event: CKSyncEngine.Event, syncEngine: CKSyncEngine) async {
-
+        
         Logger.database.log("Handling event \(event, privacy: .public)")
-
+        
         switch event {
         case .stateUpdate(let stateUpdate):
             self.lastStateSerialization = stateUpdate.stateSerialization
-
+            
         case .accountChange(let event):
             self.handleAccountChange(event)
-
+            
         case .fetchedDatabaseChanges(let event):
             self.handleFetchedDatabaseChanges(event)
-
+            
         case .fetchedRecordZoneChanges(let event):
             self.handleFetchedRecordZoneChanges(event)
-
+            
         case .sentRecordZoneChanges(let event):
             self.handleSentRecordZoneChanges(event)
-
+            
         case .sentDatabaseChanges:
             // The sample app doesn't track sent database changes in any meaningful way, but this might be useful depending on your data model.
             break
-
+            
         case .willFetchChanges, .willFetchRecordZoneChanges, .didFetchRecordZoneChanges, .didFetchChanges, .willSendChanges, .didSendChanges:
             // We don't do anything here in the sample app, but these events might be helpful if you need to do any setup/cleanup when sync starts/ends.
             break
-
+            
         @unknown default:
             Logger.database.info("Received unknown event: \(event)")
         }
     }
-    
+
     public func nextRecordZoneChangeBatch(_ context: CKSyncEngine.SendChangesContext, syncEngine: CKSyncEngine) async -> CKSyncEngine.RecordZoneChangeBatch? {
         Logger.database.info("Returning next record change batch for context: \(context.description, privacy: .public)")
 
-        let zoneIDs = context.options.zoneIDs
-        let changes = syncEngine.state.pendingRecordZoneChanges.filter { zoneIDs.contains($0.recordID.zoneID)
+        let changes = syncEngine.state.pendingRecordZoneChanges.filter { context.options.scope.contains($0.recordID)
         }
 
         let batch = await CKSyncEngine.RecordZoneChangeBatch(pendingChanges: changes) { recordID in
-            print("requesting \(recordID.recordName)")
-
             if let recordType = recordID.parsedRecordType,
                let internalID = recordID.parsedRecordID {
 
@@ -228,8 +224,10 @@ extension Harmonic: CKSyncEngineDelegate {
         }
         return batch
     }
+}
 
-    // MARK: - CKSyncEngine Events
+// MARK: - Event Handlers
+private extension Harmonic {
 
     func handleAccountChange(_ event: CKSyncEngine.Event.AccountChange) {
         Logger.database.info("Handle account change \(event, privacy: .public)")
@@ -239,20 +237,23 @@ extension Harmonic: CKSyncEngineDelegate {
         Logger.database.info("Handle fetched database changes \(event, privacy: .public)")
 
         // If a zone was deleted, we should delete everything for that zone locally.
+        #warning("Zone deletion is not handled!")
+        /* Copied from the example sync sample from Apple
         var needsToSave = false
         for deletion in event.deletions {
             switch deletion.zoneID.zoneName {
-//            case Contact.zoneName:
-//                self.appData.contacts = [:]
-//                needsToSave = true
+            case Contact.zoneName:
+                self.appData.contacts = [:]
+                needsToSave = true
             default:
                 Logger.database.info("Received deletion for unknown zone: \(deletion.zoneID)")
             }
         }
 
         if needsToSave {
-//            try? self.persistLocalData() // This error should be handled, but we'll skip that for brevity in this sample app.
+            try? self.persistLocalData() // This error should be handled, but we'll skip that for brevity in this sample app.
         }
+         */
     }
 
     func handleFetchedRecordZoneChanges(_ event: CKSyncEngine.Event.FetchedRecordZoneChanges) {
@@ -311,8 +312,7 @@ extension Harmonic: CKSyncEngineDelegate {
 
         // If we had any changes, let's save to disk.
         if !event.modifications.isEmpty || !event.deletions.isEmpty {
-//            try? self.persistLocalData() // This error should be handled, but we'll skip that for brevity in this sample app.
-            // Already saved above...
+            // Already saved above... but maybe we should save at the end of a batch?
         }
     }
 
@@ -408,12 +408,18 @@ extension Harmonic: CKSyncEngineDelegate {
             self.syncEngine.state.add(pendingRecordZoneChanges: newPendingRecordZoneChanges)
         }
     }
+}
 
-    private func modelType(for record: CKRecord) -> (any HRecord.Type)? {
+
+// MARK: - Model Type Helpers
+
+private extension Harmonic {
+
+    func modelType(for record: CKRecord) -> (any HRecord.Type)? {
         return modelType(for: record.recordType)
     }
 
-    private func modelType(for recordType: String) -> (any HRecord.Type)? {
+    func modelType(for recordType: String) -> (any HRecord.Type)? {
         guard let modelType = self.modelTypes.first(where: { t in
             t.recordType == recordType
         }) else {
@@ -421,45 +427,5 @@ extension Harmonic: CKSyncEngineDelegate {
         }
 
         return modelType
-    }
-}
-
-private extension CKRecord.ID {
-
-    var parsedRecordType: String? {
-        if let recordType = recordName
-            .split(separator: "|", maxSplits: 1)
-            .first {
-            return String(recordType)
-        } else {
-            return nil
-        }
-    }
-
-    var parsedRecordID: String? {
-        if let recordID = recordName
-            .split(separator: "|", maxSplits: 1)
-            .last {
-            return String(recordID)
-        } else {
-            return nil
-        }
-    }
-}
-
-extension CKSyncEngine.State.Serialization {
-
-    func encode() throws -> Data? {
-        return try JSONEncoder().encode(self)
-    }
-
-    static func decode(_ data: Data) throws -> Self? {
-        return try JSONDecoder().decode(Self.self, from: data)
-    }
-}
-
-extension Harmonic {
-    enum Keys {
-        static let stateSerialization = "Harmony.State"
     }
 }

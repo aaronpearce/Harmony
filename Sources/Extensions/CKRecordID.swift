@@ -15,4 +15,24 @@ extension CKRecord.ID {
             zoneID: zoneID
         )
     }
+
+    var parsedRecordType: String? {
+        if let recordType = recordName
+            .split(separator: "|", maxSplits: 1)
+            .first {
+            return String(recordType)
+        } else {
+            return nil
+        }
+    }
+
+    var parsedRecordID: String? {
+        if let recordID = recordName
+            .split(separator: "|", maxSplits: 1)
+            .last {
+            return String(recordID)
+        } else {
+            return nil
+        }
+    }
 }

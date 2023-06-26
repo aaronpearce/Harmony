@@ -3,6 +3,8 @@
 
 Harmony provides CloudKit sync for GRDB and only GRDB.
 
+Note: As this is in active development, documentation and tests are lacking, if not missing altogether, at this stage.
+
 ## Usage
 
 After installing via Swift Package Manager and enabling CloudKit for your app, add the following to your `App.swift` or equivalent to initialize Harmony. 

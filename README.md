@@ -1,4 +1,5 @@
 # Harmony
+### ⚠️ This codebase is in active development and is not suited for production use as of yet.
 
 Harmony provides CloudKit sync for GRDB and only GRDB.
 

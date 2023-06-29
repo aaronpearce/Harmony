@@ -17,7 +17,8 @@ let package = Package(
     targets: [
         .target(
             name: "Harmony",
-            dependencies: ["GRDB"]
+            dependencies: ["GRDB"],
+            path: "Harmony"
         ),
         .testTarget(
             name: "HarmonyTests",

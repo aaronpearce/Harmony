@@ -87,7 +87,7 @@ public final class Harmonic {
         }
     }
 
-    init(for modelTypes: [any HRecord.Type], configuration: Configuration, migrator: DatabaseMigrator) {
+    public init(for modelTypes: [any HRecord.Type], configuration: Configuration, migrator: DatabaseMigrator) {
         self.modelTypes = modelTypes
         
         // Don't know if we actually need to store this for later.

@@ -16,6 +16,12 @@ public extension Harmonic {
         try reader.read(block)
     }
 
+    func read<T>(_ block: @Sendable @escaping (Database) throws -> T) async throws -> T {
+        try await reader.read { db in
+            try block(db)
+        }
+    }
+
     func create<T: HRecord>(record: T) async throws {
         try await database.write { db in
             try record.insert(db)
@@ -60,7 +66,7 @@ public extension Harmonic {
         queueDeletions(for: records)
     }
 
-    func queueSaves(for records: [any HRecord]) {
+    private func queueSaves(for records: [any HRecord]) {
         Logger.database.info("Queuing saves")
         let pendingSaves: [CKSyncEngine.PendingRecordZoneChange] = records.map { 
             .save($0.recordID.fullRecordID(with: $0.record.recordType))
@@ -69,12 +75,20 @@ public extension Harmonic {
         self.syncEngine.state.add(pendingRecordZoneChanges: pendingSaves)
     }
 
-    func queueDeletions(for records: [any HRecord]) {
+    private func queueDeletions(for records: [any HRecord]) {
         Logger.database.info("Queuing deletions")
         let pendingDeletions: [CKSyncEngine.PendingRecordZoneChange] = records.map {
             .delete($0.recordID.fullRecordID(with: $0.record.recordType))
         }
 
         self.syncEngine.state.add(pendingRecordZoneChanges: pendingDeletions)
+    }
+
+    func sendChanges() async throws {
+        try await self.syncEngine.sendChanges()
+    }
+
+    func fetchChanges() async throws {
+        try await self.syncEngine.fetchChanges()
     }
 }

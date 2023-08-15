@@ -56,7 +56,7 @@ public final class Harmonic {
     private let container: CKContainer
     private let userDefaults: UserDefaults
     let database: DatabaseWriter
-    
+
     public var reader: DatabaseReader {
         database
     }
@@ -89,16 +89,16 @@ public final class Harmonic {
 
     public init(for modelTypes: [any HRecord.Type], configuration: Configuration, migrator: DatabaseMigrator) {
         self.modelTypes = modelTypes
-        
+
         // Don't know if we actually need to store this for later.
         self.configuration = configuration
-        
+
         if let cloudKitContainerIdentifier = configuration.cloudKitContainerIdentifier {
             self.container = CKContainer(identifier: cloudKitContainerIdentifier)
         } else {
             self.container = .default()
         }
-        
+
         if let sharedAppGroupContainerIdentifier = configuration.sharedAppGroupContainerIdentifier {
             self.userDefaults = UserDefaults(suiteName: sharedAppGroupContainerIdentifier)!
         } else {
@@ -114,7 +114,7 @@ public final class Harmonic {
                 let databasePath = try configuration.databasePath ?? Self.defaultDatabasePath
 
                 let databaseConfiguration = configuration.databaseConfiguration ?? Self.makeDatabaseConfiguration()
-                
+
                 self.database = try DatabasePool(
                     path: databasePath,
                     configuration: databaseConfiguration
@@ -160,35 +160,35 @@ private extension Harmonic {
 // MARK: CKSyncEngineDelegate
 
 extension Harmonic: CKSyncEngineDelegate {
-    
+
     public func handleEvent(_ event: CKSyncEngine.Event, syncEngine: CKSyncEngine) async {
-        
+
         Logger.database.log("Handling event \(event, privacy: .public)")
-        
+
         switch event {
         case .stateUpdate(let stateUpdate):
             self.lastStateSerialization = stateUpdate.stateSerialization
-            
+
         case .accountChange(let event):
             self.handleAccountChange(event)
-            
+
         case .fetchedDatabaseChanges(let event):
             self.handleFetchedDatabaseChanges(event)
-            
+
         case .fetchedRecordZoneChanges(let event):
             self.handleFetchedRecordZoneChanges(event)
-            
+
         case .sentRecordZoneChanges(let event):
             self.handleSentRecordZoneChanges(event)
-            
+
         case .sentDatabaseChanges:
             // The sample app doesn't track sent database changes in any meaningful way, but this might be useful depending on your data model.
             break
-            
+
         case .willFetchChanges, .willFetchRecordZoneChanges, .didFetchRecordZoneChanges, .didFetchChanges, .willSendChanges, .didSendChanges:
             // We don't do anything here in the sample app, but these events might be helpful if you need to do any setup/cleanup when sync starts/ends.
             break
-            
+
         @unknown default:
             Logger.database.info("Received unknown event: \(event)")
         }
@@ -197,8 +197,8 @@ extension Harmonic: CKSyncEngineDelegate {
     public func nextRecordZoneChangeBatch(_ context: CKSyncEngine.SendChangesContext, syncEngine: CKSyncEngine) async -> CKSyncEngine.RecordZoneChangeBatch? {
         Logger.database.info("Returning next record change batch for context: \(context.description, privacy: .public)")
 
-        let changes = syncEngine.state.pendingRecordZoneChanges.filter { context.options.scope.contains($0.recordID)
-        }
+        let scope = context.options.scope
+        let changes = syncEngine.state.pendingRecordZoneChanges.filter { scope.contains($0) }
 
         let batch = await CKSyncEngine.RecordZoneChangeBatch(pendingChanges: changes) { recordID in
             if let recordType = recordID.parsedRecordType,
@@ -207,21 +207,22 @@ extension Harmonic: CKSyncEngineDelegate {
                 // We can sync this.
                 // Find this in our DB
                 if let modelType = modelType(for: recordType),
-                    let record = try! await database.read({ db in
+                    let record = try? await database.read({ db in
                         let uuid = UUID(uuidString: internalID)
                         return try modelType.fetchOne(db, key: uuid)
                 }) {
                     return record.record
                 } else {
                     // Could be a deletion?
-                    syncEngine.state.remove(pendingRecordZoneChanges: [.save(recordID)])
+                    syncEngine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
                     return nil
                 }
             } else {
-                syncEngine.state.remove(pendingRecordZoneChanges: [.save(recordID)])
+                syncEngine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
                 return nil
             }
         }
+
         return batch
     }
 }
@@ -345,7 +346,7 @@ private extension Harmonic {
 
             var shouldClearServerRecord = false
             switch failedRecordSave.error.code {
-                
+
             case .serverRecordChanged:
                 // Let's merge the record from the server into our own local copy.
                 // The `mergeFromServerRecord` function takes care of the conflict resolution.
@@ -361,15 +362,15 @@ private extension Harmonic {
                     try localRecord?.save(db)
                 }
 
-                newPendingRecordZoneChanges.append(.save(failedRecord.recordID))
+                newPendingRecordZoneChanges.append(.saveRecord(failedRecord.recordID))
 
             case .zoneNotFound:
                 // Looks like we tried to save a record in a zone that doesn't exist.
                 // Let's save that zone and retry saving the record.
                 // Also clear the last known server record if we have one, it's no longer valid.
                 let zone = CKRecordZone(zoneID: failedRecord.recordID.zoneID)
-                newPendingDatabaseChanges.append(.save(zone))
-                newPendingRecordZoneChanges.append(.save(failedRecord.recordID))
+                newPendingDatabaseChanges.append(.saveZone(zone))
+                newPendingRecordZoneChanges.append(.saveRecord(failedRecord.recordID))
                 shouldClearServerRecord = true
 
             case .unknownItem:
@@ -377,7 +378,7 @@ private extension Harmonic {
                 // This might mean that another device deleted the record, but we still have the data for that record locally.
                 // We have the choice of either deleting the local data or re-uploading the local data.
                 // For this sample app, let's re-upload the local data.
-                newPendingRecordZoneChanges.append(.save(failedRecord.recordID))
+                newPendingRecordZoneChanges.append(.saveRecord(failedRecord.recordID))
                 shouldClearServerRecord = true
 
             case .networkFailure, .networkUnavailable, .zoneBusy, .serviceUnavailable, .notAuthenticated, .operationCancelled:

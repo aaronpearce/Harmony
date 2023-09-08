@@ -1,9 +1,8 @@
 # Harmony
-### ⚠️ This codebase is in active development and is not suited for production use as of yet.
 
 Harmony provides CloudKit sync for GRDB and only GRDB.
 
-Note: As this is in active development, documentation and tests are lacking, if not missing altogether, at this stage.
+Requires iOS 17.0+, macOS 14.0+, tvOS 17.0+, watchOS 10.0+, visionOS 1.0+.
 
 ## Usage
 

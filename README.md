@@ -2,7 +2,7 @@
 
 Harmony provides CloudKit sync for GRDB and only GRDB.
 
-*Requirements:* iOS 17.0+, macOS 14.0+, tvOS 17.0+, watchOS 10.0+.
+**Requirements:** iOS 17.0+, macOS 14.0+, tvOS 17.0+, watchOS 10.0+.
 
 I am open to feedback to style, functionality and other contributions.
 

@@ -64,7 +64,7 @@ extension HRecord {
 
     public var recordID: CKRecord.ID {
         CKRecord.ID(
-            recordName: "\(Self.recordType)_\(id.uuidString)",
+            recordName: "\(Self.recordType)|\(id.uuidString)",
             zoneID: zoneID
         )
     }

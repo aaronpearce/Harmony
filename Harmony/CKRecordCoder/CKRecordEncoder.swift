@@ -110,7 +110,7 @@ extension _CKRecordEncoder {
       ?? CKRecord(
         recordType: recordTypeName,
         recordID: CKRecord.ID(
-          recordName: "\(recordTypeName)|\(recordName)",
+          recordName: recordName,
           zoneID: zoneID)
       )
 

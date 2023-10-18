@@ -203,11 +203,9 @@ extension Harmonic: CKSyncEngineDelegate {
         let batch = await CKSyncEngine.RecordZoneChangeBatch(pendingChanges: changes) { recordID in
             if let recordType = recordID.parsedRecordType,
                let internalID = recordID.parsedRecordID {
-
                 // We can sync this.
                 // Find this in our DB
                 if let modelType = modelType(for: recordType),
-                    let record = try? await database.read({ db in
                         let uuid = UUID(uuidString: internalID)
                         return try modelType.fetchOne(db, key: uuid)
                 }) {

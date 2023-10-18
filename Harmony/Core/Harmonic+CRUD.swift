@@ -69,7 +69,7 @@ public extension Harmonic {
     private func queueSaves(for records: [any HRecord]) {
         Logger.database.info("Queuing saves")
         let pendingSaves: [CKSyncEngine.PendingRecordZoneChange] = records.map { 
-            .saveRecord($0.recordID.fullRecordID(with: $0.record.recordType))
+            .saveRecord($0.recordID)
         }
 
         self.syncEngine.state.add(pendingRecordZoneChanges: pendingSaves)
@@ -78,7 +78,7 @@ public extension Harmonic {
     private func queueDeletions(for records: [any HRecord]) {
         Logger.database.info("Queuing deletions")
         let pendingDeletions: [CKSyncEngine.PendingRecordZoneChange] = records.map {
-            .deleteRecord($0.recordID.fullRecordID(with: $0.record.recordType))
+            .deleteRecord($0.recordID)
         }
 
         self.syncEngine.state.add(pendingRecordZoneChanges: pendingDeletions)

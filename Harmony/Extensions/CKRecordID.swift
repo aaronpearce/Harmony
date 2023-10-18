@@ -9,13 +9,6 @@ import Foundation
 import CloudKit
 
 extension CKRecord.ID {
-    func fullRecordID(with recordType: CKRecord.RecordType) -> CKRecord.ID {
-        CKRecord.ID(
-            recordName: "\(recordType)|\(recordName)",
-            zoneID: zoneID
-        )
-    }
-
     var parsedRecordType: String? {
         if let recordType = recordName
             .split(separator: "|", maxSplits: 1)

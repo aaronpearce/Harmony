@@ -206,6 +206,7 @@ extension Harmonic: CKSyncEngineDelegate {
                 // We can sync this.
                 // Find this in our DB
                 if let modelType = modelType(for: recordType),
+                   let record = try? await database.read({ db in
                         let uuid = UUID(uuidString: internalID)
                         return try modelType.fetchOne(db, key: uuid)
                 }) {

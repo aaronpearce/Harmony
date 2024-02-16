@@ -353,7 +353,6 @@ private extension Harmonic {
                     var localRecord = try modelType.fetchOne(db, key: UUID(uuidString: id))
                     // Merge from server...
                     try localRecord?.updateChanges(db: db, ckRecord: serverRecord)
-                    try localRecord?.save(db)
                 }
 
                 newPendingRecordZoneChanges.append(.saveRecord(failedRecord.recordID))

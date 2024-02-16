@@ -8,7 +8,7 @@
 import Foundation
 import GRDB
 
-public struct Configuration {
+public struct Configuration: Sendable{
     let cloudKitContainerIdentifier: String?
     let sharedAppGroupContainerIdentifier: String?
     let databasePath: String?

@@ -81,6 +81,12 @@ extension HRecord {
         try? CKRecordDecoder().decode(Self.self, from: record)
     }
 
+    public mutating func updateChanges(db: Database, ckRecord: CKRecord) throws {
+        if let cloudRecord = Self.parseFrom(record: ckRecord) {
+            try cloudRecord.updateChanges(db, from: self)
+        }
+    }
+
     mutating func setLastKnownRecordIfNewer(_ otherRecord: CKRecord) {
         let localRecord = self.archivedRecord
         if let localDate = localRecord?.modificationDate {

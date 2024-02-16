@@ -89,8 +89,6 @@ public final class Harmonic {
 
     public init(for modelTypes: [any HRecord.Type], configuration: Configuration, migrator: DatabaseMigrator) {
         self.modelTypes = modelTypes
-
-        // Don't know if we actually need to store this for later.
         self.configuration = configuration
 
         if let cloudKitContainerIdentifier = configuration.cloudKitContainerIdentifier {
@@ -108,11 +106,8 @@ public final class Harmonic {
         if configuration.isDummy {
             self.database = try! DatabaseQueue()
         } else {
-
             do {
-
                 let databasePath = try configuration.databasePath ?? Self.defaultDatabasePath
-
                 let databaseConfiguration = configuration.databaseConfiguration ?? Self.makeDatabaseConfiguration()
 
                 self.database = try DatabasePool(

@@ -29,6 +29,15 @@ public extension Harmonic {
 
         queueSaves(for: [record])
     }
+    
+    func create<T: HRecord>(records: [T]) async throws {
+        try await database.write { db in
+            try records.forEach {
+                try $0.insert(db)
+            }
+        }
+        queueSaves(for: records)
+    }
 
     func save<T: HRecord>(record: T) async throws {
         try await database.write { db in

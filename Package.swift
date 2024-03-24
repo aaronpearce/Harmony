@@ -9,19 +9,24 @@ let package = Package(
     products: [
         .library(
             name: "Harmony",
-            targets: ["Harmony"]),
+            targets: ["Harmony"]
+        ),
     ],
     dependencies: [
-        .package(name: "GRDB", url: "https://github.com/groue/GRDB.swift", from: "6.15.0"),
+        .package(url: "https://github.com/groue/GRDB.swift", from: "6.26.0"),
     ],
     targets: [
         .target(
             name: "Harmony",
-            dependencies: ["GRDB"],
-            path: "Harmony"
+            dependencies: [
+                .product(name: "GRDB", package: "GRDB.swift")
+            ],
+            path: "Harmony",
+            resources: [.copy("PrivacyInfo.xcprivacy")]
         ),
         .testTarget(
             name: "HarmonyTests",
-            dependencies: ["Harmony"]),
+            dependencies: ["Harmony"]
+        ),
     ]
 )

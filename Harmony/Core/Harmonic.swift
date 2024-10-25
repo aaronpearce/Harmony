@@ -121,9 +121,9 @@ public final class Harmonic {
             }
 
             // Lazily start.
-            initializeSyncEngine()
 
             Task {
+                initializeSyncEngine()
                 try? await syncEngine.fetchChanges()
             }
         }

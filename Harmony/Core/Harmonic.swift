@@ -137,7 +137,6 @@ public final class Harmonic {
             // Lazily start.
             Task {
                 initializeSyncEngine()
-                try? await syncEngine.fetchChanges()
 
                 if databaseHasMigrated {
                     // Sync all entity types as an initial method, this can get smarter by only migrating those that have been altered.
@@ -145,6 +144,8 @@ public final class Harmonic {
                         try? pushAll(for: modelType)
                     }
                 }
+
+                try? await syncEngine.fetchChanges()
             }
         }
     }

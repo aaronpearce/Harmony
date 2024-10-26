@@ -283,7 +283,7 @@ private extension Harmonic {
             let record = modification.record
             if let id = record.recordID.parsedRecordID,
                let modelType = modelType(for: record) {
-                try! database.write { db in
+                try! database.writeWithDeferredForeignKeys { db in
                     if var localRecord = try modelType.fetchOne(db, key: UUID(uuidString: id)) {
                         try localRecord.updateChanges(db: db, ckRecord: record)
                     } else {
@@ -348,7 +348,7 @@ private extension Harmonic {
         for savedRecord in event.savedRecords {
             if let id = savedRecord.recordID.parsedRecordID,
                let modelType = modelType(for: savedRecord) {
-                try! database.write { db in
+                try! database.writeWithDeferredForeignKeys { db in
                     var localRecord = try? modelType.fetchOne(db, key: UUID(uuidString: id))
                     localRecord?.setLastKnownRecordIfNewer(savedRecord)
                     try! localRecord?.save(db)
@@ -375,7 +375,7 @@ private extension Harmonic {
                     continue
                 }
 
-                try? database.write { db in
+                try? database.writeWithDeferredForeignKeys { db in
                     var localRecord = try modelType.fetchOne(db, key: UUID(uuidString: id))
                     // Merge from server...
                     try localRecord?.updateChanges(db: db, ckRecord: serverRecord)
@@ -411,7 +411,7 @@ private extension Harmonic {
             }
 
             if shouldClearServerRecord {
-                try? database.write { db in
+                try? database.writeWithDeferredForeignKeys { db in
                     var localRecord = try? modelType.fetchOne(db, key: UUID(uuidString: id))
                     // Merge from server...
                     localRecord?.archivedRecord = nil

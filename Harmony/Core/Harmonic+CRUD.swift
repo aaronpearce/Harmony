@@ -75,6 +75,17 @@ public extension Harmonic {
         queueDeletions(for: records)
     }
 
+    /// Pushes all of the given record type to CloudKit
+    /// This occurs regardless of changes.
+    /// Sometimes used during migration for schema changes.
+    func pushAll<T: HRecord>(for recordType: T.Type) throws {
+        let records = try read { db in
+            return try recordType.fetchAll(db)
+        }
+
+        queueSaves(for: records)
+    }
+
     private func queueSaves(for records: [any HRecord]) {
         Logger.database.info("Queuing saves")
         let pendingSaves: [CKSyncEngine.PendingRecordZoneChange] = records.map { 

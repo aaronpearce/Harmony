@@ -103,6 +103,7 @@ public final class Harmonic {
             self.userDefaults = .standard
         }
 
+        var databaseHasMigrated = false
         if configuration.isDummy {
             self.database = try! DatabaseQueue()
         } else {
@@ -115,16 +116,35 @@ public final class Harmonic {
                     configuration: databaseConfiguration
                 )
 
+                let initialMigrations = try self.database.read { db in
+                    return try migrator.appliedMigrations(db)
+                }
+
                 try migrator.migrate(self.database)
+
+                let afterMigrations = try self.database.read { db in
+                    return try migrator.appliedMigrations(db)
+                }
+
+                // If any migration occurred, we'll sync the whole database to ensure any new default values sync too.
+                if initialMigrations != afterMigrations {
+                    databaseHasMigrated = true
+                }
             } catch {
                 fatalError("Unresolved error \(error)")
             }
 
             // Lazily start.
-
             Task {
                 initializeSyncEngine()
                 try? await syncEngine.fetchChanges()
+
+                if databaseHasMigrated {
+                    // Sync all entity types as an initial method, this can get smarter by only migrating those that have been altered.
+                    for modelType in modelTypes {
+                        try? pushAll(for: modelType)
+                    }
+                }
             }
         }
     }

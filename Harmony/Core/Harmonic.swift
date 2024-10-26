@@ -306,10 +306,15 @@ private extension Harmonic {
             }
         }
 
-        for deferredRecord in deferredRecords {
-            try? database.write { db in
-                try deferredRecord.save(db)
+        // Write deferred records with no foreign key checks to avoid conflicts for now.
+        do {
+            try database.writeWithDeferredForeignKeys { db in
+                for deferredRecord in deferredRecords {
+                    try deferredRecord.save(db)
+                }
             }
+        } catch {
+            print(error.localizedDescription)
         }
 
         for deletion in event.deletions {

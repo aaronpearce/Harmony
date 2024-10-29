@@ -29,3 +29,7 @@ You can then access your Harmony instance from anywhere for writing or reading b
 Harmony provides access to write methods that will automatically sync to CloudKit and hides direct database writing access for this purpose. If you write via another means to your GRDB database, Harmony will not see those changes.
 
 Harmony also provides direct access to your `DatabaseReader` if you wish to read directly. I highly suggest seeing if GRDBQuery will fit your needs first. 
+
+### Foreign Keys
+
+Harmony does not support usage of foreign keys in GRDB. This is due to CloudKit being a system of eventual consistency. Records can return in sets where they don't have the related data within the same set or out of order. Foreign keys are incompatible with this style of system so we have taken the choice to not support foreign keys after many attempts to do so.

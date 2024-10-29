@@ -275,7 +275,6 @@ private extension Harmonic {
     func handleFetchedRecordZoneChanges(_ event: CKSyncEngine.Event.FetchedRecordZoneChanges) {
         Logger.database.info("Handle fetched record zone changes \(event)")
 
-        var deferredRecords = [any HRecord]()
         for modification in event.modifications {
             // The sync engine fetched a record, and we want to merge it into our local persistence.
             // If we already have this object locally, let's merge the data from the server.
@@ -283,38 +282,16 @@ private extension Harmonic {
             let record = modification.record
             if let id = record.recordID.parsedRecordID,
                let modelType = modelType(for: record) {
-                try! database.writeWithDeferredForeignKeys { db in
+                try! database.write { db in
                     if var localRecord = try modelType.fetchOne(db, key: UUID(uuidString: id)) {
                         try localRecord.updateChanges(db: db, ckRecord: record)
                     } else {
                         if let model = modelType.parseFrom(record: record) {
-                            // By catching `SQLITE_CONSTRAINT_FOREIGNKEY` it allows us to defer this records to the end of this batch.
-                            // This will fail to handle if the parent record isn't in the same batch. Maybe a instance-wide "deferred" array to check each time.
-                            // Alternatively, we could use this method and just YOLO it into the database anyway.
-                            // https://github.com/groue/GRDB.swift/issues/172
-                            do {
-                                try model.save(db)
-                            } catch ResultCode.SQLITE_CONSTRAINT_FOREIGNKEY {
-                                // Defer and try again later
-                                deferredRecords.append(model)
-                            } catch {
-                                throw error
-                            }
+                            try model.save(db)
                         }
                     }
                 }
             }
-        }
-
-        // Write deferred records with no foreign key checks to avoid conflicts for now.
-        do {
-            try database.writeWithDeferredForeignKeys { db in
-                for deferredRecord in deferredRecords {
-                    try deferredRecord.save(db)
-                }
-            }
-        } catch {
-            print(error.localizedDescription)
         }
 
         for deletion in event.deletions {
@@ -348,7 +325,7 @@ private extension Harmonic {
         for savedRecord in event.savedRecords {
             if let id = savedRecord.recordID.parsedRecordID,
                let modelType = modelType(for: savedRecord) {
-                try! database.writeWithDeferredForeignKeys { db in
+                try! database.write { db in
                     var localRecord = try? modelType.fetchOne(db, key: UUID(uuidString: id))
                     localRecord?.setLastKnownRecordIfNewer(savedRecord)
                     try! localRecord?.save(db)
@@ -375,7 +352,7 @@ private extension Harmonic {
                     continue
                 }
 
-                try? database.writeWithDeferredForeignKeys { db in
+                try? database.write { db in
                     var localRecord = try modelType.fetchOne(db, key: UUID(uuidString: id))
                     // Merge from server...
                     try localRecord?.updateChanges(db: db, ckRecord: serverRecord)
@@ -411,7 +388,7 @@ private extension Harmonic {
             }
 
             if shouldClearServerRecord {
-                try? database.writeWithDeferredForeignKeys { db in
+                try? database.write { db in
                     var localRecord = try? modelType.fetchOne(db, key: UUID(uuidString: id))
                     // Merge from server...
                     localRecord?.archivedRecord = nil

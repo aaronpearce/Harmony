@@ -18,13 +18,13 @@ public struct Harmony {
 
     static var hasBeenInitialized = false
 
-    public init() {
+    nonisolated public init() {
         if !Self.hasBeenInitialized {
             fatalError("Ensure your first usage of @Harmonic initializes the system.")
         }
     }
 
-    public init(records modelTypes: [any HRecord.Type], configuration: Configuration, migrator: DatabaseMigrator) {
+    nonisolated public init(records modelTypes: [any HRecord.Type], configuration: Configuration, migrator: DatabaseMigrator) {
 
         guard !Self.hasBeenInitialized else {
             fatalError("Do not try to initialize @Harmonic twice!")

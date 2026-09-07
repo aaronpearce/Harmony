@@ -333,6 +333,25 @@ private extension Harmonic {
             }
         }
 
+        for (recordID, error) in event.failedRecordDeletes {
+            switch Self.failedDeleteResolution(for: error.code) {
+            case .alreadyDeleted:
+                Logger.database.info(
+                    "Delete already satisfied for \(recordID): \(error.localizedDescription)"
+                )
+            case .syncEngineRetries:
+                Logger.database.debug(
+                    "Retryable error deleting \(recordID): \(error.localizedDescription)"
+                )
+            case .retry:
+                newPendingRecordZoneChanges.append(.deleteRecord(recordID))
+            case .report:
+                Logger.database.fault(
+                    "Unrecoverable error deleting \(recordID): \(error.localizedDescription)"
+                )
+            }
+        }
+
         // Handle any failed record saves.
         for failedRecordSave in event.failedRecordSaves {
             let failedRecord = failedRecordSave.record
@@ -403,6 +422,35 @@ private extension Harmonic {
 
         if !newPendingRecordZoneChanges.isEmpty {
             self.syncEngine.state.add(pendingRecordZoneChanges: newPendingRecordZoneChanges)
+        }
+    }
+}
+
+
+extension Harmonic {
+    enum FailedDeleteResolution: Equatable {
+        case alreadyDeleted
+        case syncEngineRetries
+        case retry
+        case report
+    }
+
+    static func failedDeleteResolution(for errorCode: CKError.Code) -> FailedDeleteResolution {
+        switch errorCode {
+        case .unknownItem, .zoneNotFound:
+            return .alreadyDeleted
+        case .networkFailure,
+             .networkUnavailable,
+             .zoneBusy,
+             .serviceUnavailable,
+             .notAuthenticated,
+             .operationCancelled,
+             .requestRateLimited:
+            return .syncEngineRetries
+        case .serverRecordChanged, .batchRequestFailed:
+            return .retry
+        default:
+            return .report
         }
     }
 }

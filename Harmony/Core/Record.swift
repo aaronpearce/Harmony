@@ -34,6 +34,12 @@ public protocol HRecord: CloudKitEncodable & CloudKitDecodable & FetchableRecord
     static func parseFrom(record: CKRecord) -> Self?
     
     mutating func updateChanges(db: Database, ckRecord: CKRecord) throws
+
+    /// Removes files or other local resources owned by this record.
+    ///
+    /// Harmony invokes this after the local record has been deleted and, for
+    /// explicit deletes, after its CloudKit deletion has been queued.
+    func removeLocalResources() throws
 }
 
 extension HRecord {
@@ -86,6 +92,8 @@ extension HRecord {
             try cloudRecord.updateChanges(db, from: self)
         }
     }
+
+    public func removeLocalResources() throws {}
 
     mutating func setLastKnownRecordIfNewer(_ otherRecord: CKRecord) {
         let localRecord = self.archivedRecord

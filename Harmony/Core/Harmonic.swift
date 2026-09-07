@@ -282,28 +282,44 @@ private extension Harmonic {
             let record = modification.record
             if let id = record.recordID.parsedRecordID,
                let modelType = modelType(for: record) {
-                try! database.write { db in
-                    if var localRecord = try modelType.fetchOne(db, key: UUID(uuidString: id)) {
-                        try localRecord.updateChanges(db: db, ckRecord: record)
-                    } else {
-                        if let model = modelType.parseFrom(record: record) {
-                            try model.save(db)
+                try? database.write { db in
+                    do {
+                        if var localRecord = try modelType.fetchOne(db, key: UUID(uuidString: id)) {
+                            try? localRecord.updateChanges(db: db, ckRecord: record)
+                        } else {
+                            if let model = modelType.parseFrom(record: record) {
+                                try model.save(db)
+                            }
                         }
+                    } catch let error as RecordError {
+                        Logger.database.error("RecordError: \(error.localizedDescription)")
+                    } catch let error {
+                        Logger.database.error("Error: \(error.localizedDescription) in handleFetchedRecordZoneChanges")
                     }
                 }
             }
         }
 
         for deletion in event.deletions {
-
             // A record was deleted on the server, so let's remove it from our local persistence.
             let recordID = deletion.recordID
             if let recordType = recordID.parsedRecordType,
                 let id = recordID.parsedRecordID,
                let modelType = modelType(for: recordType) {
-                // Find it locally and merge it
-                _ = try! database.write { db in
-                    try modelType.deleteOne(db, key: UUID(uuidString: id))
+                do {
+                    let localRecord = try database.write { db -> (any HRecord)? in
+                        let key = UUID(uuidString: id)
+                        let record = try modelType.fetchOne(db, key: key)
+                        try modelType.deleteOne(db, key: key)
+                        return record
+                    }
+                    if let localRecord {
+                        removeLocalResources(for: [localRecord])
+                    }
+                } catch {
+                    Logger.database.error(
+                        "Failed to delete fetched record \(recordID): \(error.localizedDescription)"
+                    )
                 }
             }
         }
@@ -329,6 +345,28 @@ private extension Harmonic {
                     var localRecord = try? modelType.fetchOne(db, key: UUID(uuidString: id))
                     localRecord?.setLastKnownRecordIfNewer(savedRecord)
                     try! localRecord?.save(db)
+                }
+            }
+        }
+
+        for deletedRecordID in event.deletedRecordIDs {
+            if let recordType = deletedRecordID.parsedRecordType,
+                let id = deletedRecordID.parsedRecordID,
+               let modelType = modelType(for: recordType) {
+                do {
+                    let localRecord = try database.write { db -> (any HRecord)? in
+                        let key = UUID(uuidString: id)
+                        let record = try modelType.fetchOne(db, key: key)
+                        try modelType.deleteOne(db, key: key)
+                        return record
+                    }
+                    if let localRecord {
+                        removeLocalResources(for: [localRecord])
+                    }
+                } catch {
+                    Logger.database.error(
+                        "Failed to finalize deleted record \(deletedRecordID): \(error.localizedDescription)"
+                    )
                 }
             }
         }

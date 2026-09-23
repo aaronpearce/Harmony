@@ -57,6 +57,29 @@ public extension Harmonic {
         queueSaves(for: records)
     }
 
+    /// Writes saves and deletions of different record types in one local transaction.
+    /// CloudKit changes and local-resource cleanup run only after it commits.
+    func write(saving recordsToSave: [any HRecord], deleting recordsToDelete: [any HRecord]) async throws {
+        guard !recordsToSave.isEmpty || !recordsToDelete.isEmpty else { return }
+
+        try await database.write { db in
+            for record in recordsToSave {
+                try record.save(db)
+            }
+            for record in recordsToDelete {
+                try record.delete(db)
+            }
+        }
+
+        if !recordsToSave.isEmpty {
+            queueSaves(for: recordsToSave)
+        }
+        if !recordsToDelete.isEmpty {
+            queueDeletions(for: recordsToDelete)
+            removeLocalResources(for: recordsToDelete)
+        }
+    }
+
     func delete<T: HRecord>(record: T) async throws {
         _ = try await database.write { db in
             try record.delete(db)

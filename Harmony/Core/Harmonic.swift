@@ -42,18 +42,13 @@ public final class Harmonic {
     // Shared or private?
     let configuration: Configuration
 
-    /// The sync engine being used to sync.
-    /// This is lazily initialized. You can re-initialize the sync engine by setting `_syncEngine` to nil then calling `self.syncEngine`.
-    var _syncEngine: CKSyncEngine?
+    /// All callers, including startup and CRUD, share one engine and pending queue.
+    private let syncEngineStorage = LockedLazy<CKSyncEngine>()
     var syncEngine: CKSyncEngine {
-        if _syncEngine == nil {
-            self.initializeSyncEngine()
-        }
-        return _syncEngine!
+        syncEngineStorage.get { makeSyncEngine() }
     }
 
     private let modelTypes: [any HRecord.Type]
-    private let container: CKContainer
     private let userDefaults: UserDefaults
     let database: DatabaseWriter
 
@@ -65,10 +60,6 @@ public final class Harmonic {
         DatabaseRegionObservation(
             tracking: .fullDatabase
         ).publisher(in: database)
-    }
-
-    private var privateDatabase: CKDatabase {
-        container.privateCloudDatabase
     }
 
     private var lastStateSerialization: CKSyncEngine.State.Serialization? {
@@ -90,12 +81,6 @@ public final class Harmonic {
     public init(for modelTypes: [any HRecord.Type], configuration: Configuration, migrator: DatabaseMigrator) {
         self.modelTypes = modelTypes
         self.configuration = configuration
-
-        if let cloudKitContainerIdentifier = configuration.cloudKitContainerIdentifier {
-            self.container = CKContainer(identifier: cloudKitContainerIdentifier)
-        } else {
-            self.container = .default()
-        }
 
         if let sharedAppGroupContainerIdentifier = configuration.sharedAppGroupContainerIdentifier {
             self.userDefaults = UserDefaults(suiteName: sharedAppGroupContainerIdentifier)!
@@ -136,7 +121,7 @@ public final class Harmonic {
 
             // Lazily start.
             Task {
-                initializeSyncEngine()
+                _ = syncEngine
 
                 if databaseHasMigrated {
                     // Sync all entity types as an initial method, this can get smarter by only migrating those that have been altered.
@@ -160,16 +145,24 @@ public final class Harmonic {
 
 private extension Harmonic {
 
-    func initializeSyncEngine() {
+    func makeSyncEngine() -> CKSyncEngine {
+        // Construct the CloudKit container only when sync actually starts.
+        // In-memory dummy instances never contact or require an iCloud account.
+        let container: CKContainer
+        if let identifier = self.configuration.cloudKitContainerIdentifier {
+            container = CKContainer(identifier: identifier)
+        } else {
+            container = .default()
+        }
         var configuration = CKSyncEngine.Configuration(
-            database: self.container.privateCloudDatabase,
+            database: container.privateCloudDatabase,
             stateSerialization: self.lastStateSerialization,
             delegate: self
         )
         configuration.automaticallySync = true //self.automaticallySync
         let syncEngine = CKSyncEngine(configuration)
-        _syncEngine = syncEngine
         Logger.database.log("Initialized sync engine: \(syncEngine)")
+        return syncEngine
     }
 }
 
@@ -217,33 +210,40 @@ extension Harmonic: CKSyncEngineDelegate {
         let changes = syncEngine.state.pendingRecordZoneChanges.filter { scope.contains($0) }
 
         let batch = await CKSyncEngine.RecordZoneChangeBatch(pendingChanges: changes) { recordID in
-            if let recordType = recordID.parsedRecordType,
-               let internalID = recordID.parsedRecordID {
-                // We can sync this.
-                // Find this in our DB
-                if let modelType = modelType(for: recordType),
-                   let record = try? await database.read({ db in
-                        let uuid = UUID(uuidString: internalID)
-                        return try modelType.fetchOne(db, key: uuid)
-                }) {
-                    return record.record
-                } else {
-                    // Could be a deletion?
-                    syncEngine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
-                    return nil
-                }
-            } else {
+            guard let recordType = recordID.parsedRecordType,
+                  let internalID = recordID.parsedRecordID,
+                  let uuid = UUID(uuidString: internalID),
+                  let modelType = modelType(for: recordType) else {
                 syncEngine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
                 return nil
             }
+
+            return await Self.recordToUpload(
+                recordID: recordID,
+                fetch: {
+                    let record = try await self.database.read { db in
+                        try modelType.fetchOne(db, key: uuid)
+                    }
+                    return record?.record
+                },
+                removePendingSave: {
+                    syncEngine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
+                }
+            )
         }
 
+        // A read failure leaves the change pending for a later send. Do not
+        // repeatedly return an empty batch while the database remains unavailable.
+        guard let batch,
+              !batch.recordsToSave.isEmpty || !batch.recordIDsToDelete.isEmpty else {
+            return nil
+        }
         return batch
     }
 }
 
 // MARK: - Event Handlers
-private extension Harmonic {
+extension Harmonic {
 
     func handleAccountChange(_ event: CKSyncEngine.Event.AccountChange) {
         Logger.database.info("Handle account change \(event, privacy: .public)")
@@ -333,12 +333,26 @@ private extension Harmonic {
     func handleSentRecordZoneChanges(_ event: CKSyncEngine.Event.SentRecordZoneChanges) {
         Logger.database.info("Handle sent record zone changes \(event, privacy: .public)")
 
+        handleSentRecordZoneChanges(
+            savedRecords: event.savedRecords,
+            deletedRecordIDs: event.deletedRecordIDs,
+            failedRecordDeletes: event.failedRecordDeletes,
+            failedRecordSaves: event.failedRecordSaves
+        )
+    }
+
+    func handleSentRecordZoneChanges(
+        savedRecords: [CKRecord],
+        deletedRecordIDs: [CKRecord.ID],
+        failedRecordDeletes: [CKRecord.ID: CKError],
+        failedRecordSaves: [CKSyncEngine.Event.SentRecordZoneChanges.FailedRecordSave]
+    ) {
         // If we failed to save a record, we might want to retry depending on the error code.
         var newPendingRecordZoneChanges = [CKSyncEngine.PendingRecordZoneChange]()
         var newPendingDatabaseChanges = [CKSyncEngine.PendingDatabaseChange]()
 
         // Update the last known server record for each of the saved records.
-        for savedRecord in event.savedRecords {
+        for savedRecord in savedRecords {
             if let id = savedRecord.recordID.parsedRecordID,
                let modelType = modelType(for: savedRecord) {
                 try! database.write { db in
@@ -349,29 +363,15 @@ private extension Harmonic {
             }
         }
 
-        for deletedRecordID in event.deletedRecordIDs {
-            if let recordType = deletedRecordID.parsedRecordType,
-                let id = deletedRecordID.parsedRecordID,
-               let modelType = modelType(for: recordType) {
-                do {
-                    let localRecord = try database.write { db -> (any HRecord)? in
-                        let key = UUID(uuidString: id)
-                        let record = try modelType.fetchOne(db, key: key)
-                        try modelType.deleteOne(db, key: key)
-                        return record
-                    }
-                    if let localRecord {
-                        removeLocalResources(for: [localRecord])
-                    }
-                } catch {
-                    Logger.database.error(
-                        "Failed to finalize deleted record \(deletedRecordID): \(error.localizedDescription)"
-                    )
-                }
-            }
+        // Explicit CRUD deletes already committed locally and cleaned their
+        // resources before queueing the cloud deletion. This acknowledgement
+        // refers to that older operation, not to a possibly recreated local row.
+        // In particular, never delete a replacement row or its resources here.
+        for deletedRecordID in deletedRecordIDs {
+            Logger.database.debug("Acknowledged deletion of \(deletedRecordID)")
         }
 
-        for (recordID, error) in event.failedRecordDeletes {
+        for (recordID, error) in failedRecordDeletes {
             switch Self.failedDeleteResolution(for: error.code) {
             case .alreadyDeleted:
                 Logger.database.info(
@@ -391,7 +391,7 @@ private extension Harmonic {
         }
 
         // Handle any failed record saves.
-        for failedRecordSave in event.failedRecordSaves {
+        for failedRecordSave in failedRecordSaves {
             let failedRecord = failedRecordSave.record
             guard let id = failedRecord.recordID.parsedRecordID,
                 let modelType = modelType(for: failedRecord) else {
@@ -512,3 +512,4 @@ private extension Harmonic {
         return modelType
     }
 }
+

@@ -15,3 +15,7 @@ final class LockedLazy<Value> {
         return newValue
     }
 }
+
+// The lock protects construction/storage; a Sendable value may safely be
+// returned to callers after that lock is released.
+extension LockedLazy: @unchecked Sendable where Value: Sendable {}

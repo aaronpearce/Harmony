@@ -3,6 +3,7 @@ import Foundation
 import GRDB
 import Testing
 @testable import Harmony
+@testable import struct Harmony.Configuration
 
 struct SyncRecoveryTests {
     @Test

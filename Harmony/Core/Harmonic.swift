@@ -7,7 +7,6 @@
 
 import SwiftUI
 import CloudKit
-import os.log
 import GRDB
 import Combine
 
@@ -73,16 +72,32 @@ public final class Harmonic {
 
     private var lastStateSerialization: CKSyncEngine.State.Serialization? {
         get {
-            if let data = userDefaults.data(forKey: Keys.stateSerialization),
-               let state = try? CKSyncEngine.State.Serialization.decode(data) {
-                return state
-            } else {
+            guard let data = userDefaults.data(forKey: Keys.stateSerialization) else { return nil }
+            do {
+                return try CKSyncEngine.State.Serialization.decode(data)
+            } catch {
+                recordDiagnostic(.init(
+                    kind: .checkpointFailed,
+                    level: .error,
+                    operation: .checkpoint,
+                    error: error
+                ))
                 return nil
             }
         }
         set {
-            if let data = try? newValue?.encode() {
-                userDefaults.set(data, forKey: Keys.stateSerialization)
+            do {
+                if let data = try newValue?.encode() {
+                    userDefaults.set(data, forKey: Keys.stateSerialization)
+                    recordDiagnostic(.init(kind: .checkpointSaved))
+                }
+            } catch {
+                recordDiagnostic(.init(
+                    kind: .checkpointFailed,
+                    level: .error,
+                    operation: .checkpoint,
+                    error: error
+                ))
             }
         }
     }
@@ -141,11 +156,30 @@ public final class Harmonic {
                 if databaseHasMigrated {
                     // Sync all entity types as an initial method, this can get smarter by only migrating those that have been altered.
                     for modelType in modelTypes {
-                        try? pushAll(for: modelType)
+                        do {
+                            try pushAll(for: modelType)
+                        } catch {
+                            recordDiagnostic(.init(
+                                kind: .operationFailed,
+                                level: .error,
+                                operation: .initialUpload,
+                                recordType: modelType.recordType,
+                                error: error
+                            ))
+                        }
                     }
                 }
 
-                try? await syncEngine.fetchChanges()
+                do {
+                    try await syncEngine.fetchChanges()
+                } catch {
+                    recordDiagnostic(.init(
+                        kind: .operationFailed,
+                        level: .error,
+                        operation: .fetch,
+                        error: error
+                    ))
+                }
             }
         }
     }
@@ -169,7 +203,10 @@ private extension Harmonic {
         configuration.automaticallySync = true //self.automaticallySync
         let syncEngine = CKSyncEngine(configuration)
         _syncEngine = syncEngine
-        Logger.database.log("Initialized sync engine: \(syncEngine)")
+        recordDiagnostic(.init(
+            kind: .engineInitialized,
+            level: .notice
+        ))
     }
 }
 
@@ -179,14 +216,14 @@ extension Harmonic: CKSyncEngineDelegate {
 
     public func handleEvent(_ event: CKSyncEngine.Event, syncEngine: CKSyncEngine) async {
 
-        Logger.database.log("Handling event \(event, privacy: .public)")
+        recordDiagnostics(for: event, engine: syncEngine)
 
         switch event {
         case .stateUpdate(let stateUpdate):
             self.lastStateSerialization = stateUpdate.stateSerialization
 
-        case .accountChange(let event):
-            self.handleAccountChange(event)
+        case .accountChange:
+            break // Account changes are reported by recordDiagnostics(for:engine:).
 
         case .fetchedDatabaseChanges(let event):
             self.handleFetchedDatabaseChanges(event)
@@ -206,15 +243,19 @@ extension Harmonic: CKSyncEngineDelegate {
             break
 
         @unknown default:
-            Logger.database.info("Received unknown event: \(event)")
+            break // Unknown events are reported by recordDiagnostics(for:engine:).
         }
     }
 
     public func nextRecordZoneChangeBatch(_ context: CKSyncEngine.SendChangesContext, syncEngine: CKSyncEngine) async -> CKSyncEngine.RecordZoneChangeBatch? {
-        Logger.database.info("Returning next record change batch for context: \(context.description, privacy: .public)")
 
         let scope = context.options.scope
         let changes = syncEngine.state.pendingRecordZoneChanges.filter { scope.contains($0) }
+
+        recordDiagnostic(.init(
+            kind: .batchPrepared,
+            pending: changes.count
+        ))
 
         let batch = await CKSyncEngine.RecordZoneChangeBatch(pendingChanges: changes) { recordID in
             if let recordType = recordID.parsedRecordType,
@@ -224,15 +265,30 @@ extension Harmonic: CKSyncEngineDelegate {
                 if let modelType = modelType(for: recordType),
                    let record = try? await database.read({ db in
                         let uuid = UUID(uuidString: internalID)
-                        return try modelType.fetchOne(db, key: uuid)
+                        return try self.withDiagnostics(operation: .prepareUpload, recordType: recordType) {
+                            try modelType.fetchOne(db, key: uuid)
+                        }
                 }) {
                     return record.record
                 } else {
+                    recordDiagnostic(.init(
+                        kind: .recordSkipped,
+                        level: .warning,
+                        operation: .prepareUpload,
+                        recordType: recordType,
+                        recovery: .discarded
+                    ))
                     // Could be a deletion?
                     syncEngine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
                     return nil
                 }
             } else {
+                recordDiagnostic(.init(
+                    kind: .recordSkipped,
+                    level: .warning,
+                    operation: .prepareUpload,
+                    recovery: .discarded
+                ))
                 syncEngine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
                 return nil
             }
@@ -245,12 +301,7 @@ extension Harmonic: CKSyncEngineDelegate {
 // MARK: - Event Handlers
 private extension Harmonic {
 
-    func handleAccountChange(_ event: CKSyncEngine.Event.AccountChange) {
-        Logger.database.info("Handle account change \(event, privacy: .public)")
-    }
-
     func handleFetchedDatabaseChanges(_ event: CKSyncEngine.Event.FetchedDatabaseChanges) {
-        Logger.database.info("Handle fetched database changes \(event, privacy: .public)")
 
         // If a zone was deleted, we should delete everything for that zone locally.
         #warning("Zone deletion is not handled!")
@@ -262,7 +313,7 @@ private extension Harmonic {
                 self.appData.contacts = [:]
                 needsToSave = true
             default:
-                Logger.database.info("Received deletion for unknown zone: \(deletion.zoneID)")
+                break
             }
         }
 
@@ -273,7 +324,6 @@ private extension Harmonic {
     }
 
     func handleFetchedRecordZoneChanges(_ event: CKSyncEngine.Event.FetchedRecordZoneChanges) {
-        Logger.database.info("Handle fetched record zone changes \(event)")
 
         for modification in event.modifications {
             // The sync engine fetched a record, and we want to merge it into our local persistence.
@@ -282,19 +332,33 @@ private extension Harmonic {
             let record = modification.record
             if let id = record.recordID.parsedRecordID,
                let modelType = modelType(for: record) {
-                try? database.write { db in
-                    do {
-                        if var localRecord = try modelType.fetchOne(db, key: UUID(uuidString: id)) {
-                            try? localRecord.updateChanges(db: db, ckRecord: record)
-                        } else {
-                            if let model = modelType.parseFrom(record: record) {
+                try? withDiagnostics(operation: .importRecord, recordType: record.recordType) {
+                    try database.write { db in
+                        do {
+                            if var localRecord = try modelType.fetchOne(db, key: UUID(uuidString: id)) {
+                                try? withDiagnostics(operation: .importRecord, recordType: record.recordType) {
+                                    try localRecord.updateChanges(db: db, ckRecord: record)
+                                }
+                            } else if let model = modelType.parseFrom(record: record) {
                                 try model.save(db)
+                            } else {
+                                recordDiagnostic(.init(
+                                    kind: .recordSkipped,
+                                    level: .warning,
+                                    operation: .importRecord,
+                                    recordType: record.recordType,
+                                    recovery: .discarded
+                                ))
                             }
+                        } catch {
+                            recordDiagnostic(.init(
+                                kind: .operationFailed,
+                                level: .error,
+                                operation: .importRecord,
+                                recordType: record.recordType,
+                                error: error
+                            ))
                         }
-                    } catch let error as RecordError {
-                        Logger.database.error("RecordError: \(error.localizedDescription)")
-                    } catch let error {
-                        Logger.database.error("Error: \(error.localizedDescription) in handleFetchedRecordZoneChanges")
                     }
                 }
             }
@@ -317,9 +381,13 @@ private extension Harmonic {
                         removeLocalResources(for: [localRecord])
                     }
                 } catch {
-                    Logger.database.error(
-                        "Failed to delete fetched record \(recordID): \(error.localizedDescription)"
-                    )
+                    recordDiagnostic(.init(
+                        kind: .operationFailed,
+                        level: .error,
+                        operation: .delete,
+                        recordType: recordType,
+                        error: error
+                    ))
                 }
             }
         }
@@ -331,7 +399,6 @@ private extension Harmonic {
     }
 
     func handleSentRecordZoneChanges(_ event: CKSyncEngine.Event.SentRecordZoneChanges) {
-        Logger.database.info("Handle sent record zone changes \(event, privacy: .public)")
 
         // If we failed to save a record, we might want to retry depending on the error code.
         var newPendingRecordZoneChanges = [CKSyncEngine.PendingRecordZoneChange]()
@@ -364,30 +431,44 @@ private extension Harmonic {
                         removeLocalResources(for: [localRecord])
                     }
                 } catch {
-                    Logger.database.error(
-                        "Failed to finalize deleted record \(deletedRecordID): \(error.localizedDescription)"
-                    )
+                    recordDiagnostic(.init(
+                        kind: .operationFailed,
+                        level: .error,
+                        operation: .delete,
+                        recordType: recordType,
+                        error: error
+                    ))
                 }
             }
         }
 
         for (recordID, error) in event.failedRecordDeletes {
+            let recovery: SyncDiagnosticEvent.Recovery
+            let level: SyncDiagnosticEvent.Level
+
             switch Self.failedDeleteResolution(for: error.code) {
             case .alreadyDeleted:
-                Logger.database.info(
-                    "Delete already satisfied for \(recordID): \(error.localizedDescription)"
-                )
+                recovery = .alreadyDeleted
+                level = .info
             case .syncEngineRetries:
-                Logger.database.debug(
-                    "Retryable error deleting \(recordID): \(error.localizedDescription)"
-                )
+                recovery = .systemRetry
+                level = .debug
             case .retry:
+                recovery = .requeue
+                level = .warning
                 newPendingRecordZoneChanges.append(.deleteRecord(recordID))
             case .report:
-                Logger.database.fault(
-                    "Unrecoverable error deleting \(recordID): \(error.localizedDescription)"
-                )
+                recovery = .unhandled
+                level = .fault
             }
+
+            recordDiagnostic(.init(
+                kind: .operationFailed,
+                level: level,
+                operation: .delete,
+                error: error,
+                recovery: recovery
+            ))
         }
 
         // Handle any failed record saves.
@@ -395,27 +476,50 @@ private extension Harmonic {
             let failedRecord = failedRecordSave.record
             guard let id = failedRecord.recordID.parsedRecordID,
                 let modelType = modelType(for: failedRecord) else {
+                recordDiagnostic(.init(
+                    kind: .recordSkipped,
+                    level: .warning,
+                    operation: .save,
+                    recordType: failedRecord.recordType,
+                    error: failedRecordSave.error,
+                    recovery: .discarded
+                ))
+
                 continue
             }
 
+            var recovery = SyncDiagnosticEvent.Recovery.unhandled
+            var level = SyncDiagnosticEvent.Level.fault
             var shouldClearServerRecord = false
+
             switch failedRecordSave.error.code {
 
             case .serverRecordChanged:
                 // Let's merge the record from the server into our own local copy.
                 // The `mergeFromServerRecord` function takes care of the conflict resolution.
                 guard let serverRecord = failedRecordSave.error.serverRecord else {
-                    Logger.database.error("No server record for conflict \(failedRecordSave.error)")
+                    recordDiagnostic(.init(
+                        kind: .operationFailed,
+                        level: .error,
+                        operation: .save,
+                        recordType: failedRecord.recordType,
+                        error: failedRecordSave.error,
+                        recovery: .discarded
+                    ))
+
                     continue
                 }
 
-                try? database.write { db in
-                    var localRecord = try modelType.fetchOne(db, key: UUID(uuidString: id))
-                    // Merge from server...
-                    try localRecord?.updateChanges(db: db, ckRecord: serverRecord)
+                try? withDiagnostics(operation: .save, recordType: failedRecord.recordType) {
+                    try database.write { db in
+                        var localRecord = try modelType.fetchOne(db, key: UUID(uuidString: id))
+                        try localRecord?.updateChanges(db: db, ckRecord: serverRecord)
+                    }
                 }
 
                 newPendingRecordZoneChanges.append(.saveRecord(failedRecord.recordID))
+                recovery = .requeue
+                level = .warning
 
             case .zoneNotFound:
                 // Looks like we tried to save a record in a zone that doesn't exist.
@@ -425,6 +529,8 @@ private extension Harmonic {
                 newPendingDatabaseChanges.append(.saveZone(zone))
                 newPendingRecordZoneChanges.append(.saveRecord(failedRecord.recordID))
                 shouldClearServerRecord = true
+                recovery = .requeue
+                level = .warning
 
             case .unknownItem:
                 // We tried to save a record with a locally-cached server record, but that record no longer exists on the server.
@@ -433,23 +539,38 @@ private extension Harmonic {
                 // For this sample app, let's re-upload the local data.
                 newPendingRecordZoneChanges.append(.saveRecord(failedRecord.recordID))
                 shouldClearServerRecord = true
+                recovery = .requeue
+                level = .warning
 
             case .networkFailure, .networkUnavailable, .zoneBusy, .serviceUnavailable, .notAuthenticated, .operationCancelled:
                 // There are several errors that the sync engine will automatically retry, let's just log and move on.
-                Logger.database.debug("Retryable error saving \(failedRecord.recordID): \(failedRecordSave.error)")
+                recovery = .systemRetry
+                level = .debug
 
             default:
                 // We got an error, but we don't know what it is or how to handle it.
                 // If you have any sort of telemetry system, you should consider tracking this scenario so you can understand which errors you see in the wild.
-                Logger.database.fault("Unknown error saving record \(failedRecord.recordID): \(failedRecordSave.error)")
+                break
             }
 
+            recordDiagnostic(.init(
+                kind: .operationFailed,
+                level: level,
+                operation: .save,
+                recordType: failedRecord.recordType,
+                error: failedRecordSave.error,
+                recovery: recovery
+            ))
+
             if shouldClearServerRecord {
-                try? database.write { db in
-                    var localRecord = try? modelType.fetchOne(db, key: UUID(uuidString: id))
-                    // Merge from server...
-                    localRecord?.archivedRecord = nil
-                    try localRecord?.save(db)
+                try? withDiagnostics(operation: .save, recordType: failedRecord.recordType) {
+                    try database.write { db in
+                        var localRecord = try? withDiagnostics(operation: .save, recordType: failedRecord.recordType) {
+                            try modelType.fetchOne(db, key: UUID(uuidString: id))
+                        }
+                        localRecord?.archivedRecord = nil
+                        try localRecord?.save(db)
+                    }
                 }
             }
         }
@@ -463,7 +584,6 @@ private extension Harmonic {
         }
     }
 }
-
 
 extension Harmonic {
     enum FailedDeleteResolution: Equatable {
@@ -492,7 +612,6 @@ extension Harmonic {
         }
     }
 }
-
 
 // MARK: - Model Type Helpers
 

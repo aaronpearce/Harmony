@@ -8,7 +8,6 @@
 import Foundation
 import GRDB
 import CloudKit
-import os.log
 
 public extension Harmonic {
 
@@ -29,7 +28,7 @@ public extension Harmonic {
 
         queueSaves(for: [record])
     }
-    
+
     func create<T: HRecord>(records: [T]) async throws {
         try await database.write { db in
             try records.forEach {
@@ -127,7 +126,12 @@ public extension Harmonic {
     }
 
     private func queueSaves(for records: [any HRecord]) {
-        Logger.database.info("Queuing saves")
+        recordDiagnostic(.init(
+            kind: .recordsQueued,
+            operation: .save,
+            saved: records.count
+        ))
+
         let pendingSaves: [CKSyncEngine.PendingRecordZoneChange] = records
             .unique(by: \.recordID)
             .map {
@@ -138,7 +142,12 @@ public extension Harmonic {
     }
 
     private func queueDeletions(for records: [any HRecord]) {
-        Logger.database.info("Queuing deletions")
+        recordDiagnostic(.init(
+            kind: .recordsQueued,
+            operation: .delete,
+            deleted: records.count
+        ))
+
         let pendingDeletions: [CKSyncEngine.PendingRecordZoneChange] = records
             .unique(by: \.recordID)
             .map {
@@ -149,11 +158,33 @@ public extension Harmonic {
     }
 
     func sendChanges() async throws {
-        try await self.syncEngine.sendChanges()
+        do {
+            try await self.syncEngine.sendChanges()
+        } catch {
+            recordDiagnostic(.init(
+                kind: .operationFailed,
+                level: .error,
+                operation: .send,
+                error: error
+            ))
+
+            throw error
+        }
     }
 
     func fetchChanges() async throws {
-        try await self.syncEngine.fetchChanges()
+        do {
+            try await self.syncEngine.fetchChanges()
+        } catch {
+            recordDiagnostic(.init(
+                kind: .operationFailed,
+                level: .error,
+                operation: .fetch,
+                error: error
+            ))
+
+            throw error
+        }
     }
 }
 
@@ -163,9 +194,13 @@ extension Harmonic {
             do {
                 try record.removeLocalResources()
             } catch {
-                Logger.database.error(
-                    "Failed to remove local resources for \(record.recordID): \(error.localizedDescription)"
-                )
+                recordDiagnostic(.init(
+                    kind: .operationFailed,
+                    level: .error,
+                    operation: .cleanup,
+                    recordType: type(of: record).recordType,
+                    error: error
+                ))
             }
         }
     }
